@@ -25,6 +25,8 @@ type DiffPair struct {
 type Request struct {
 	V        int        `json:"v"`
 	Host     string     `json:"host"`
+	User     string     `json:"user,omitempty"`
+	Port     int        `json:"port,omitempty"`
 	Cwd      string     `json:"cwd"`
 	Paths    []PathSpec `json:"paths"`
 	Wait     bool       `json:"wait,omitempty"`

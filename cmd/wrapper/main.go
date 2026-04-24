@@ -8,8 +8,8 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -17,7 +17,7 @@ import (
 	"zed-remote-wrapper/internal/protocol"
 )
 
-const usage = `zed-remote wrapper — forwards file-open requests to a local Zed over an SSH unix socket.
+const usage = `zed-remote-wrapper — forwards file-open requests to a local Zed over an SSH unix socket.
 
 USAGE:
   zed [OPTIONS] [PATH[:LINE[:COL]]]...
@@ -28,21 +28,34 @@ OPTIONS:
   -n, --new           Open in a new workspace.
   -e, --existing      Open in an existing window.
       --diff A B      Open a diff view between A and B. Can be repeated.
-  -H, --host ALIAS    Override the ssh_config alias (default: $LC_ZED_REMOTE_HOST
-                      or host= from ~/.config/zed-remote.conf or /etc/zed-remote.conf).
   -v, --version       Print wrapper version.
   -h, --help          Show this message.
   --                  End of options; remaining args are literal paths.
 
-The wrapper connects to /tmp/zed-$USER.sock which must be forwarded via SSH
-RemoteForward to a listener running on the local macOS laptop.
+CONFIGURATION
+  Values are read first from environment variables, then from the config files
+  ~/.config/zed-remote.conf and /etc/zed-remote.conf.
+
+  LC_ZED_REMOTE_HOST   SSH host alias used by the local listener to open Zed.
+                       Config key: host=<alias>  (required)
+
+  LC_ZED_REMOTE_SOCK   Unix socket path that the wrapper dials.  Must match the
+                       path used in sshd_config RemoteForward on the server.
+                       Config key: sock=<path>  (required if not set via env)
+
+  LC_ZED_REMOTE_USER   SSH username forwarded to the listener so it can connect
+                       back to the remote server.  Defaults to empty (listener
+                       uses its own ssh config).
+                       Config key: user=<username>
+
+  LC_ZED_REMOTE_PORT   SSH port forwarded to the listener.  Defaults to 22.
+                       Config key: port=<number>
 `
 
 const version = "zed-remote-wrapper 0.1.0"
 
 type cliArgs struct {
 	Wait, Add, New, Existing bool
-	Host                     string
 	Paths                    []string
 	DiffPairs                [][2]string
 }
@@ -69,16 +82,6 @@ func parseArgs(argv []string) (*cliArgs, error) {
 			c.New = true
 		case a == "-e" || a == "--existing":
 			c.Existing = true
-		case a == "-H" || a == "--host":
-			if i+1 >= len(argv) {
-				return nil, fmt.Errorf("%s requires an argument", a)
-			}
-			c.Host = argv[i+1]
-			i++
-		case strings.HasPrefix(a, "-H="):
-			c.Host = a[3:]
-		case strings.HasPrefix(a, "--host="):
-			c.Host = a[len("--host="):]
 		case a == "--diff":
 			if i+2 >= len(argv) {
 				return nil, fmt.Errorf("--diff requires two arguments")
@@ -101,23 +104,50 @@ func parseArgs(argv []string) (*cliArgs, error) {
 	return c, nil
 }
 
-func resolveHost(flagHost string) string {
-	if flagHost != "" {
-		return flagHost
-	}
-	if v := os.Getenv("LC_ZED_REMOTE_HOST"); v != "" {
+func resolveUser() string {
+	if v := os.Getenv("LC_ZED_REMOTE_USER"); v != "" {
 		return v
 	}
 	home, _ := os.UserHomeDir()
 	for _, p := range []string{filepath.Join(home, ".config", "zed-remote.conf"), "/etc/zed-remote.conf"} {
-		if v := readHostFromConf(p); v != "" {
+		if v := readConfValue(p, "user"); v != "" {
 			return v
 		}
 	}
 	return ""
 }
 
-func readHostFromConf(path string) string {
+func resolvePort() int {
+	if v := os.Getenv("LC_ZED_REMOTE_PORT"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil && p > 0 {
+			return p
+		}
+	}
+	home, _ := os.UserHomeDir()
+	for _, p := range []string{filepath.Join(home, ".config", "zed-remote.conf"), "/etc/zed-remote.conf"} {
+		if v := readConfValue(p, "port"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				return n
+			}
+		}
+	}
+	return 22
+}
+
+func resolveHost() string {
+	if v := os.Getenv("LC_ZED_REMOTE_HOST"); v != "" {
+		return v
+	}
+	home, _ := os.UserHomeDir()
+	for _, p := range []string{filepath.Join(home, ".config", "zed-remote.conf"), "/etc/zed-remote.conf"} {
+		if v := readConfValue(p, "host"); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func readConfValue(path, key string) string {
 	f, err := os.Open(path)
 	if err != nil {
 		return ""
@@ -133,7 +163,7 @@ func readHostFromConf(path string) string {
 		if !ok {
 			continue
 		}
-		if strings.TrimSpace(k) == "host" {
+		if strings.TrimSpace(k) == key {
 			return strings.Trim(strings.TrimSpace(v), `"'`)
 		}
 	}
@@ -141,11 +171,16 @@ func readHostFromConf(path string) string {
 }
 
 func socketPath() (string, error) {
-	u, err := user.Current()
-	if err != nil {
-		return "", err
+	if v := os.Getenv("LC_ZED_REMOTE_SOCK"); v != "" {
+		return v, nil
 	}
-	return filepath.Join("/tmp", "zed-"+u.Username+".sock"), nil
+	home, _ := os.UserHomeDir()
+	for _, p := range []string{filepath.Join(home, ".config", "zed-remote.conf"), "/etc/zed-remote.conf"} {
+		if v := readConfValue(p, "sock"); v != "" {
+			return v, nil
+		}
+	}
+	return "", fmt.Errorf("socket path not configured: set LC_ZED_REMOTE_SOCK or add sock= to ~/.config/zed-remote.conf")
 }
 
 func die(format string, args ...any) {
@@ -159,9 +194,9 @@ func main() {
 		die("%v", err)
 	}
 
-	host := resolveHost(args.Host)
+	host := resolveHost()
 	if host == "" {
-		die("not inside a configured ssh session (set LC_ZED_REMOTE_HOST, use -H <alias>, or write host=ALIAS to ~/.config/zed-remote.conf)")
+		die("host not configured: set LC_ZED_REMOTE_HOST or add host=ALIAS to ~/.config/zed-remote.conf")
 	}
 
 	cwd, err := os.Getwd()
@@ -173,6 +208,8 @@ func main() {
 	req := &protocol.Request{
 		V:        protocol.Version,
 		Host:     host,
+		User:     resolveUser(),
+		Port:     resolvePort(),
 		Cwd:      cwd,
 		Wait:     args.Wait,
 		Add:      args.Add,

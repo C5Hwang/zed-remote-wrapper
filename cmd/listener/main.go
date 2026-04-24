@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -97,8 +98,8 @@ func handleConn(c net.Conn) {
 	_ = c.SetReadDeadline(time.Time{})
 
 	if *verboseFlag {
-		log.Printf("request: host=%s paths=%d wait=%v add=%v new=%v existing=%v diffs=%d",
-			req.Host, len(req.Paths), req.Wait, req.Add, req.New, req.Existing, len(req.Diffs))
+		log.Printf("request: host=%s user=%s port=%d paths=%d wait=%v add=%v new=%v existing=%v diffs=%d",
+			req.Host, req.User, req.Port, len(req.Paths), req.Wait, req.Add, req.New, req.Existing, len(req.Diffs))
 	}
 
 	args, err := buildZedArgs(req)
@@ -204,19 +205,26 @@ func buildZedArgs(req *protocol.Request) ([]string, error) {
 		args = append(args, "--existing")
 	}
 	for _, d := range req.Diffs {
-		args = append(args, "--diff", sshURL(req.Host, d.A, 0, 0), sshURL(req.Host, d.B, 0, 0))
+		args = append(args, "--diff", sshURL(req.Host, req.User, req.Port, d.A, 0, 0), sshURL(req.Host, req.User, req.Port, d.B, 0, 0))
 	}
 	for _, p := range req.Paths {
-		args = append(args, sshURL(req.Host, p.Path, p.Line, p.Col))
+		args = append(args, sshURL(req.Host, req.User, req.Port, p.Path, p.Line, p.Col))
 	}
 	return args, nil
 }
 
-func sshURL(host, path string, line, col int) string {
+func sshURL(host, user string, port int, path string, line, col int) string {
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
-	u := &url.URL{Scheme: "ssh", Host: host, Path: path}
+	h := host
+	if port != 22 {
+		h = net.JoinHostPort(host, strconv.Itoa(port))
+	}
+	u := &url.URL{Scheme: "ssh", Host: h, Path: path}
+	if user != "" {
+		u.User = url.User(user)
+	}
 	out := u.String()
 	if line > 0 {
 		out += fmt.Sprintf(":%d", line)
