@@ -99,10 +99,7 @@ Add the following block to your local `~/.ssh/config`:
 ```
 # >>> zed-remote >>>
 Match exec "test -S %d/.zed-remote.sock"
-  SetEnv LC_ZED_REMOTE_HOST=%n
-  SetEnv LC_ZED_REMOTE_USER=%r
-  SetEnv LC_ZED_REMOTE_PORT=%p
-  SetEnv LC_ZED_REMOTE_SOCK=/tmp/zed-%r-%h.sock
+  SetEnv LC_ZED_REMOTE_HOST=%n LC_ZED_REMOTE_USER=%r LC_ZED_REMOTE_PORT=%p LC_ZED_REMOTE_SOCK=/tmp/zed-%r-%h.sock
   RemoteForward /tmp/zed-%r-%h.sock %d/.zed-remote.sock
   StreamLocalBindUnlink yes
   ExitOnForwardFailure no
