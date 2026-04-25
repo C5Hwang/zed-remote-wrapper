@@ -24,7 +24,7 @@ bridged by SSH `RemoteForward`.
     (wrapper)
         │ JSON over unix socket
         ▼
-  /tmp/zed-$USER-$HOST.sock  ══════  RemoteForward  ══════  ~/.zed-remote.sock
+  /tmp/zed-<hash>.sock       ══════  RemoteForward  ══════  ~/.zed-remote.sock
                                                                    │
                                                                    ▼
                                                                (listener)
@@ -99,8 +99,8 @@ Add the following block to your local `~/.ssh/config`:
 ```
 # >>> zed-remote >>>
 Match exec "test -S %d/.zed-remote.sock"
-  SetEnv LC_ZED_REMOTE_HOST=%n LC_ZED_REMOTE_USER=%r LC_ZED_REMOTE_PORT=%p LC_ZED_REMOTE_SOCK=/tmp/zed-%r-%h.sock
-  RemoteForward /tmp/zed-%r-%h.sock %d/.zed-remote.sock
+  SetEnv LC_ZED_REMOTE_HOST=%n LC_ZED_REMOTE_USER=%r LC_ZED_REMOTE_PORT=%p LC_ZED_REMOTE_SOCK=/tmp/zed-%C.sock
+  RemoteForward /tmp/zed-%C.sock %d/.zed-remote.sock
   StreamLocalBindUnlink yes
   ExitOnForwardFailure no
   ControlMaster auto
@@ -115,10 +115,11 @@ This block does following things:
 - **Injects connection details** — four `SetEnv` lines capture the SSH host alias
   (`%n`), remote username (`%r`), remote port (`%p`), and socket path, so the
   listener can build fully-qualified `ssh://user@host:port/path` URLs for Zed.
-- **Injects the socket path** (`SetEnv LC_ZED_REMOTE_SOCK=/tmp/zed-%r-%h.sock`) — the
-  wrapper reads this to locate the right socket.
+- **Injects the socket path** (`SetEnv LC_ZED_REMOTE_SOCK=/tmp/zed-%C.sock`) — the
+  wrapper reads this to locate the right socket. `%C` is a hash of the local hostname,
+  remote host, port, and user.
 - **Forwards the socket** (`RemoteForward`) — tunnels the local listener socket to
-  `/tmp/zed-<user>-<host>.sock` on the remote. `StreamLocalBindUnlink yes` cleans up
+  `/tmp/zed-<hash>.sock` on the remote. `StreamLocalBindUnlink yes` cleans up
   stale sockets from previous sessions; `ExitOnForwardFailure no` keeps the session
   alive even if the forward fails.
 - **Multiplexes connections to the same host** (`ControlMaster auto` / `ControlPath` /
@@ -176,14 +177,24 @@ order: **env var → `~/.config/zed-remote.conf` → `/etc/zed-remote.conf`**.
 host=myhost
 user=myuser
 port=2222
-sock=/tmp/zed-myuser-myhost.sock
+sock=/tmp/zed-a3f8c2d1e9b7f543.sock
 # Lines starting with # are comments.
 ```
 
 `user=`, `port=`, and `sock=` are _static_ values — they do not vary per connection.
 
-If `port=` is unset (and `LC_ZED_REMOTE_PORT` is absent), the port defaults to 22
-and is omitted from the generated `ssh://` URL.
+> **`port=`** defaults to 22 and is omitted from the generated `ssh://` URL if unset
+> (and `LC_ZED_REMOTE_PORT` is also absent).
+
+#### Finding the `sock=` hash
+
+The `sock=` path ends with a **hash** — the same `%C` token OpenSSH uses in `ControlPath`.
+
+You can find your hash by running below on the local machine (requires at least one prior connection):
+
+```bash
+ssh -G <alias> | grep controlpath   # shows ~/.ssh/cm-zed-<hash>
+```
 
 ## Protocol
 
@@ -232,14 +243,14 @@ The wire protocol is newline-framed JSON.
 
 ## Troubleshooting
 
-| Symptom                                             | What to check                                                                                                                                                                               |
-| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `zed-remote: host not configured`                   | Host alias not resolved. Check `echo $LC_ZED_REMOTE_HOST`; if empty, verify `AcceptEnv LC_*` in remote `sshd_config`, or write `host=ALIAS` to `~/.config/zed-remote.conf`.                 |
-| `zed-remote: /tmp/zed-$USER-$HOST.sock not present` | `RemoteForward` failed. Confirm the local listener is running and check `ssh -vvv <alias> true` for forwarding details. Also verify `AcceptEnv LC_ZED_REMOTE_SOCK` in remote `sshd_config`. |
-| `zed-remote: listener closed connection`            | Listener crashed or was stopped. Run it in the foreground with `zed-remote-listener -v` to see errors.                                                                                      |
-| `Could not request local forwarding.`               | Listener is not running, or the `Match exec` gate failed. Verify the socket path and OpenSSH version.                                                                                       |
-| Zed shows `ssh://...` tabs stuck "connecting"       | Configure the host in Zed once via the command palette (`project: open remote ssh...`) so Zed knows the key and port.                                                                       |
-| `bind: Address already in use`                      | A stale socket remains. Run `rm ~/.zed-remote.sock` and restart the listener.                                                                                                               |
+| Symptom                                                        | What to check                                                                                                                                                                                                 |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `zed-remote: host not configured`                              | Host alias not resolved. Check `echo $LC_ZED_REMOTE_HOST`; if empty, verify `AcceptEnv LC_*` in remote `sshd_config`, or write `host=ALIAS` to `~/.config/zed-remote.conf`.                                   |
+| `zed-remote: /tmp/zed-<hash>.sock not present`                 | `RemoteForward` failed. Confirm the local listener is running and check `ssh -vvv <alias> true` for forwarding details. Also verify `AcceptEnv LC_ZED_REMOTE_SOCK` in remote `sshd_config`.                   |
+| `zed-remote: listener closed connection`                       | Listener crashed or was stopped. Run it in the foreground with `zed-remote-listener -v` to see errors.                                                                                                        |
+| `Could not request local forwarding.`                          | Listener is not running, or the `Match exec` gate failed. Verify the socket path and OpenSSH version.                                                                                                         |
+| Zed shows `ssh://...` tabs stuck "connecting"                  | Configure the host in Zed once via the command palette (`project: open remote ssh...`) so Zed knows the key and port.                                                                                         |
+| `bind: Address already in use`                                 | A stale socket remains. Run `rm ~/.zed-remote.sock` and restart the listener.                                                                                                                                 |
 | Second concurrent session loses the socket on first disconnect | `ControlMaster` not active. Run `ssh -O check <alias>` — if it reports "no master found", an earlier `Host *` block likely set `ControlMaster no`; move the `zed-remote` block to the top of `~/.ssh/config`. |
 
 ## Uninstall
