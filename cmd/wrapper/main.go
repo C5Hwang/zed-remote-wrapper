@@ -184,7 +184,7 @@ func socketPath() (string, error) {
 }
 
 func die(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "zed-remote: "+format+"\n", args...)
+	fmt.Fprintf(os.Stderr, "[zed-remote-wrapper] "+format+"\n", args...)
 	os.Exit(1)
 }
 
@@ -201,7 +201,7 @@ func main() {
 
 	cwd, err := os.Getwd()
 	if err != nil {
-		die("getwd: %v", err)
+		die("getwd -- %v", err)
 	}
 	home, _ := os.UserHomeDir()
 
@@ -219,18 +219,18 @@ func main() {
 	for _, p := range args.Paths {
 		ps, err := paths.ParsePathSpec(p, cwd, home)
 		if err != nil {
-			die("resolve %q: %v", p, err)
+			die("resolve %q -- %v", p, err)
 		}
 		req.Paths = append(req.Paths, ps)
 	}
 	for _, d := range args.DiffPairs {
 		a, err := paths.ParsePathSpec(d[0], cwd, home)
 		if err != nil {
-			die("resolve --diff %q: %v", d[0], err)
+			die("resolve --diff %q -- %v", d[0], err)
 		}
 		b, err := paths.ParsePathSpec(d[1], cwd, home)
 		if err != nil {
-			die("resolve --diff %q: %v", d[1], err)
+			die("resolve --diff %q -- %v", d[1], err)
 		}
 		req.Diffs = append(req.Diffs, protocol.DiffPair{A: a.Path, B: b.Path})
 	}
@@ -242,7 +242,7 @@ func main() {
 
 	conn, err := net.Dial("unix", sock)
 	if err != nil {
-		die("%s not present; RemoteForward failed (is the local listener running? is sshd AcceptEnv LC_*?): %v", sock, err)
+		die("%s not present -- %v", sock, err)
 	}
 	defer conn.Close()
 
@@ -254,7 +254,7 @@ func main() {
 	}()
 
 	if err := protocol.EncodeRequest(conn, req); err != nil {
-		die("send request: %v", err)
+		die("send request -- %v", err)
 	}
 
 	br := bufio.NewReader(conn)
@@ -263,10 +263,10 @@ func main() {
 		f, err := protocol.DecodeFrame(br)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				fmt.Fprintln(os.Stderr, "zed-remote: listener closed connection")
+				fmt.Fprintln(os.Stderr, "[zed-remote-wrapper] listener closed connection")
 				os.Exit(1)
 			}
-			die("read frame: %v", err)
+			die("read frame -- %v", err)
 		}
 		switch f.T {
 		case protocol.FrameOut:
@@ -274,7 +274,7 @@ func main() {
 		case protocol.FrameErr:
 			os.Stderr.Write(f.D)
 		case protocol.FrameError:
-			fmt.Fprintf(os.Stderr, "zed-remote: listener error: %s\n", f.Msg)
+			fmt.Fprintf(os.Stderr, "[zed-remote-wrapper] listener error -- %s\n", f.Msg)
 			exitCode = 1
 		case protocol.FrameExit:
 			exitCode = f.Code

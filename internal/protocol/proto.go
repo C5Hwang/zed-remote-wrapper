@@ -70,7 +70,7 @@ func DecodeRequest(br *bufio.Reader) (*Request, error) {
 	}
 	var r Request
 	if err := json.Unmarshal(line, &r); err != nil {
-		return nil, fmt.Errorf("decode request: %w", err)
+		return nil, fmt.Errorf("decode request -- %w", err)
 	}
 	if r.V != Version {
 		return nil, fmt.Errorf("unsupported protocol version %d (want %d)", r.V, Version)
@@ -109,7 +109,7 @@ func DecodeFrame(br *bufio.Reader) (*Frame, error) {
 	}
 	var f Frame
 	if err := json.Unmarshal(line, &f); err != nil {
-		return nil, fmt.Errorf("decode frame: %w", err)
+		return nil, fmt.Errorf("decode frame -- %w", err)
 	}
 	return &f, nil
 }

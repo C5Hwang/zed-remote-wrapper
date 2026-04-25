@@ -2,10 +2,10 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/url"
 	"os"
@@ -20,6 +20,56 @@ import (
 	"zed-remote-wrapper/internal/protocol"
 )
 
+const (
+	ansiReset  = "\x1b[0m"
+	ansiCyan   = "\x1b[36m"
+	ansiYellow = "\x1b[33m"
+	ansiRed    = "\x1b[31m"
+)
+
+const jsonBorder = "────────────────────────────────────────"
+
+var useColor = isTTY(os.Stderr)
+
+func isTTY(f *os.File) bool {
+	fi, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
+}
+
+func levelTag(level, color string) string {
+	if !useColor {
+		return level
+	}
+	return color + level + ansiReset
+}
+
+func logf(level, color, format string, args ...any) {
+	ts := time.Now().Format("15:04:05.000")
+	msg := fmt.Sprintf(format, args...)
+	fmt.Fprintf(os.Stderr, "%s  %s  zed-remote-listener  %s\n", ts, levelTag(level, color), msg)
+}
+
+func logInfof(format string, args ...any)  { logf("INFO ", ansiCyan, format, args...) }
+func logWarnf(format string, args ...any)  { logf("WARN ", ansiYellow, format, args...) }
+func logErrorf(format string, args ...any) { logf("ERROR", ansiRed, format, args...) }
+func logFatalf(format string, args ...any) { logErrorf(format, args...); os.Exit(1) }
+
+func logRequestDump(req *protocol.Request) {
+	logInfof("received request")
+	pretty, err := json.MarshalIndent(req, "", "  ")
+	if err != nil {
+		logErrorf("marshal request for log -- %v", err)
+		return
+	}
+	fmt.Fprintln(os.Stderr, jsonBorder)
+	os.Stderr.Write(pretty)
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, jsonBorder)
+}
+
 var (
 	socketFlag  = flag.String("socket", "", "Unix socket path to listen on (default: $HOME/.zed-remote.sock)")
 	zedFlag     = flag.String("zed", "", "Path to the local zed CLI (default: first `zed` on $PATH)")
@@ -33,7 +83,7 @@ func main() {
 	if sockPath == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			log.Fatalf("user home dir: %v", err)
+			logFatalf("user home dir -- %v", err)
 		}
 		sockPath = filepath.Join(home, ".zed-remote.sock")
 	}
@@ -42,11 +92,11 @@ func main() {
 	if zedPath == "" {
 		p, err := exec.LookPath("zed")
 		if err != nil {
-			log.Fatalf("zed binary not found on $PATH; install Zed CLI or pass --zed <path>: %v", err)
+			logFatalf("zed binary not found on $PATH -- %v", err)
 		}
 		zedPath = p
 	} else if _, err := os.Stat(zedPath); err != nil {
-		log.Fatalf("zed binary not found at %s: %v", zedPath, err)
+		logFatalf("zed binary not found at %s -- %v", zedPath, err)
 	}
 	// Overwrite flag value so handleConn reads the resolved path.
 	*zedFlag = zedPath
@@ -54,18 +104,20 @@ func main() {
 	_ = os.Remove(sockPath)
 	l, err := net.Listen("unix", sockPath)
 	if err != nil {
-		log.Fatalf("listen %s: %v", sockPath, err)
+		logFatalf("listen %s -- %v", sockPath, err)
 	}
 	if err := os.Chmod(sockPath, 0600); err != nil {
-		log.Fatalf("chmod %s: %v", sockPath, err)
+		logFatalf("chmod %s -- %v", sockPath, err)
 	}
-	log.Printf("listening on %s (zed=%s)", sockPath, zedPath)
+	logInfof("listening on %s zed=%s", sockPath, zedPath)
 
+	closing := make(chan struct{})
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		s := <-sigCh
-		log.Printf("received %s, shutting down", s)
+		logInfof("received %s, shutting down", s)
+		close(closing)
 		l.Close()
 		_ = os.Remove(sockPath)
 		os.Exit(0)
@@ -74,10 +126,15 @@ func main() {
 	for {
 		conn, err := l.Accept()
 		if err != nil {
+			select {
+			case <-closing:
+				return
+			default:
+			}
 			if ne, ok := err.(net.Error); ok && ne.Timeout() {
 				continue
 			}
-			log.Printf("accept: %v", err)
+			logErrorf("accept failed -- %v", err)
 			return
 		}
 		go handleConn(conn)
@@ -92,14 +149,13 @@ func handleConn(c net.Conn) {
 	br := bufio.NewReader(c)
 	req, err := protocol.DecodeRequest(br)
 	if err != nil {
-		_ = fw.Write(protocol.Frame{T: protocol.FrameError, Msg: fmt.Sprintf("parse request: %v", err)})
+		_ = fw.Write(protocol.Frame{T: protocol.FrameError, Msg: fmt.Sprintf("parse request -- %v", err)})
 		return
 	}
 	_ = c.SetReadDeadline(time.Time{})
 
 	if *verboseFlag {
-		log.Printf("request: host=%s user=%s port=%d paths=%d wait=%v add=%v new=%v existing=%v diffs=%d",
-			req.Host, req.User, req.Port, len(req.Paths), req.Wait, req.Add, req.New, req.Existing, len(req.Diffs))
+		logRequestDump(req)
 	}
 
 	args, err := buildZedArgs(req)
@@ -112,17 +168,17 @@ func handleConn(c net.Conn) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		_ = fw.Write(protocol.Frame{T: protocol.FrameError, Msg: fmt.Sprintf("stdout pipe: %v", err)})
+		_ = fw.Write(protocol.Frame{T: protocol.FrameError, Msg: fmt.Sprintf("stdout pipe -- %v", err)})
 		return
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		_ = fw.Write(protocol.Frame{T: protocol.FrameError, Msg: fmt.Sprintf("stderr pipe: %v", err)})
+		_ = fw.Write(protocol.Frame{T: protocol.FrameError, Msg: fmt.Sprintf("stderr pipe -- %v", err)})
 		return
 	}
 
 	if err := cmd.Start(); err != nil {
-		_ = fw.Write(protocol.Frame{T: protocol.FrameError, Msg: fmt.Sprintf("exec zed: %v", err)})
+		_ = fw.Write(protocol.Frame{T: protocol.FrameError, Msg: fmt.Sprintf("exec zed -- %v", err)})
 		return
 	}
 	pgid := cmd.Process.Pid
@@ -150,7 +206,7 @@ func handleConn(c net.Conn) {
 		code := exitCode(err)
 		_ = fw.Write(protocol.Frame{T: protocol.FrameExit, Code: code})
 	case <-disconnected:
-		log.Printf("client disconnected, terminating pid=%d", pgid)
+		logWarnf("client disconnected, terminating pid=%d", pgid)
 		_ = syscall.Kill(-pgid, syscall.SIGTERM)
 		select {
 		case <-done:
