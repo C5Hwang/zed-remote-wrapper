@@ -17,11 +17,6 @@ type PathSpec struct {
 	Col  int    `json:"col,omitempty"`
 }
 
-type DiffPair struct {
-	A string `json:"a"`
-	B string `json:"b"`
-}
-
 type Request struct {
 	V        int        `json:"v"`
 	Host     string     `json:"host"`
@@ -29,11 +24,9 @@ type Request struct {
 	Port     int        `json:"port,omitempty"`
 	Cwd      string     `json:"cwd"`
 	Paths    []PathSpec `json:"paths"`
-	Wait     bool       `json:"wait,omitempty"`
 	Add      bool       `json:"add,omitempty"`
 	New      bool       `json:"new,omitempty"`
 	Existing bool       `json:"existing,omitempty"`
-	Diffs    []DiffPair `json:"diffs,omitempty"`
 }
 
 type Frame struct {

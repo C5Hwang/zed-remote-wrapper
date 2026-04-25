@@ -23,11 +23,9 @@ USAGE:
   zed [OPTIONS] [PATH[:LINE[:COL]]]...
 
 OPTIONS:
-  -w, --wait          Wait for the opened paths to close before exiting.
   -a, --add           Add paths to the current workspace.
   -n, --new           Open in a new workspace.
   -e, --existing      Open in an existing window.
-      --diff A B      Open a diff view between A and B. Can be repeated.
   -v, --version       Print wrapper version.
   -h, --help          Show this message.
   --                  End of options; remaining args are literal paths.
@@ -55,9 +53,8 @@ CONFIGURATION
 const version = "zed-remote-wrapper 0.1.0"
 
 type cliArgs struct {
-	Wait, Add, New, Existing bool
-	Paths                    []string
-	DiffPairs                [][2]string
+	Add, New, Existing bool
+	Paths              []string
 }
 
 func parseArgs(argv []string) (*cliArgs, error) {
@@ -74,20 +71,12 @@ func parseArgs(argv []string) (*cliArgs, error) {
 		switch {
 		case a == "--":
 			rest = true
-		case a == "-w" || a == "--wait":
-			c.Wait = true
 		case a == "-a" || a == "--add":
 			c.Add = true
 		case a == "-n" || a == "--new":
 			c.New = true
 		case a == "-e" || a == "--existing":
 			c.Existing = true
-		case a == "--diff":
-			if i+2 >= len(argv) {
-				return nil, fmt.Errorf("--diff requires two arguments")
-			}
-			c.DiffPairs = append(c.DiffPairs, [2]string{argv[i+1], argv[i+2]})
-			i += 2
 		case a == "-v" || a == "--version":
 			fmt.Println(version)
 			os.Exit(0)
@@ -184,7 +173,7 @@ func socketPath() (string, error) {
 }
 
 func die(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "[zed-remote-wrapper] "+format+"\n", args...)
+	fmt.Fprintf(os.Stderr, format+"\n", args...)
 	os.Exit(1)
 }
 
@@ -211,7 +200,6 @@ func main() {
 		User:     resolveUser(),
 		Port:     resolvePort(),
 		Cwd:      cwd,
-		Wait:     args.Wait,
 		Add:      args.Add,
 		New:      args.New,
 		Existing: args.Existing,
@@ -222,17 +210,6 @@ func main() {
 			die("resolve %q -- %v", p, err)
 		}
 		req.Paths = append(req.Paths, ps)
-	}
-	for _, d := range args.DiffPairs {
-		a, err := paths.ParsePathSpec(d[0], cwd, home)
-		if err != nil {
-			die("resolve --diff %q -- %v", d[0], err)
-		}
-		b, err := paths.ParsePathSpec(d[1], cwd, home)
-		if err != nil {
-			die("resolve --diff %q -- %v", d[1], err)
-		}
-		req.Diffs = append(req.Diffs, protocol.DiffPair{A: a.Path, B: b.Path})
 	}
 
 	sock, err := socketPath()
@@ -263,7 +240,7 @@ func main() {
 		f, err := protocol.DecodeFrame(br)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				fmt.Fprintln(os.Stderr, "[zed-remote-wrapper] listener closed connection")
+				fmt.Fprintln(os.Stderr, "listener closed connection")
 				os.Exit(1)
 			}
 			die("read frame -- %v", err)
@@ -274,7 +251,7 @@ func main() {
 		case protocol.FrameErr:
 			os.Stderr.Write(f.D)
 		case protocol.FrameError:
-			fmt.Fprintf(os.Stderr, "[zed-remote-wrapper] listener error -- %s\n", f.Msg)
+			fmt.Fprintf(os.Stderr, "listener error -- %s\n", f.Msg)
 			exitCode = 1
 		case protocol.FrameExit:
 			exitCode = f.Code

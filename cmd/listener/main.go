@@ -177,6 +177,10 @@ func handleConn(c net.Conn) {
 		return
 	}
 
+	if *verboseFlag {
+		logInfof("executing command: %s", strconv.Quote(strings.Join(cmd.Args, " ")))
+	}
+
 	if err := cmd.Start(); err != nil {
 		_ = fw.Write(protocol.Frame{T: protocol.FrameError, Msg: fmt.Sprintf("exec zed -- %v", err)})
 		return
@@ -248,9 +252,6 @@ func buildZedArgs(req *protocol.Request) ([]string, error) {
 		return nil, fmt.Errorf("empty host in request")
 	}
 	var args []string
-	if req.Wait {
-		args = append(args, "--wait")
-	}
 	if req.Add {
 		args = append(args, "--add")
 	}
@@ -259,9 +260,6 @@ func buildZedArgs(req *protocol.Request) ([]string, error) {
 	}
 	if req.Existing {
 		args = append(args, "--existing")
-	}
-	for _, d := range req.Diffs {
-		args = append(args, "--diff", sshURL(req.Host, req.User, req.Port, d.A, 0, 0), sshURL(req.Host, req.User, req.Port, d.B, 0, 0))
 	}
 	for _, p := range req.Paths {
 		args = append(args, sshURL(req.Host, req.User, req.Port, p.Path, p.Line, p.Col))
