@@ -103,6 +103,9 @@ Match exec "test -S %d/.zed-remote.sock"
   RemoteForward /tmp/zed-%r-%h.sock %d/.zed-remote.sock
   StreamLocalBindUnlink yes
   ExitOnForwardFailure no
+  ControlMaster auto
+  ControlPath ~/.ssh/cm-zed-%C
+  ControlPersist 600
 # <<< zed-remote <<<
 ```
 
@@ -118,6 +121,15 @@ This block does following things:
   `/tmp/zed-<user>-<host>.sock` on the remote. `StreamLocalBindUnlink yes` cleans up
   stale sockets from previous sessions; `ExitOnForwardFailure no` keeps the session
   alive even if the forward fails.
+- **Multiplexes connections to the same host** (`ControlMaster auto` / `ControlPath` /
+  `ControlPersist 600`) — every `ssh` invocation to the same `user@host:port` shares
+  one underlying TCP connection, so `RemoteForward` is only set up once and remains
+  alive across concurrent sessions. The master persists for 600 s after the last
+  session ends, keeping the socket valid for new sessions started shortly after.
+
+> The `# >>> zed-remote >>>` block should be placed **near the top** of `~/.ssh/config`
+> so its `ControlMaster` / `ControlPath` settings take precedence over any earlier
+> `Host *` defaults (SSH config is first-match-wins).
 
 ### 3. Deploy the wrapper (remote)
 
@@ -228,6 +240,7 @@ The wire protocol is newline-framed JSON.
 | `Could not request local forwarding.`               | Listener is not running, or the `Match exec` gate failed. Verify the socket path and OpenSSH version.                                                                                       |
 | Zed shows `ssh://...` tabs stuck "connecting"       | Configure the host in Zed once via the command palette (`project: open remote ssh...`) so Zed knows the key and port.                                                                       |
 | `bind: Address already in use`                      | A stale socket remains. Run `rm ~/.zed-remote.sock` and restart the listener.                                                                                                               |
+| Second concurrent session loses the socket on first disconnect | `ControlMaster` not active. Run `ssh -O check <alias>` — if it reports "no master found", an earlier `Host *` block likely set `ControlMaster no`; move the `zed-remote` block to the top of `~/.ssh/config`. |
 
 ## Uninstall
 
@@ -235,6 +248,7 @@ The wire protocol is newline-framed JSON.
 # Local
 pkill -f zed-remote-listener
 rm -f ~/.local/bin/zed-remote-listener ~/.zed-remote.sock
+rm -f ~/.ssh/cm-zed-*   # ControlMaster sockets
 
 # Remove the `# >>> zed-remote >>>` … `# <<< zed-remote <<<` block from ~/.ssh/config
 
@@ -246,8 +260,3 @@ ssh <alias> 'rm -f ~/.local/bin/zed ~/.config/zed-remote.conf'
 
 - macOS and Linux only — no Windows support on either side.
 - The listener does not auto-restart on crash.
-- **Multiple concurrent sessions to the same host** — each SSH session binds
-  `RemoteForward` to the same socket path (`/tmp/zed-<user>-<host>.sock`); because
-  `StreamLocalBindUnlink yes` is set, each new session replaces the previous binding.
-  When any session disconnects, sshd removes the socket file, causing new `zed`
-  invocations from remaining sessions to fail with "socket not present".
